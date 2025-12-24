@@ -1,0 +1,784 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Quality Control Dashboard</title>
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <style>
+        :root {
+            --primary: #2563eb;
+            --success: #16a34a;
+            --danger: #dc2626;
+            --warning: #d97706;
+            --bg-dark: #1e293b;
+            --bg-card: #334155;
+            --text-primary: #f1f5f9;
+            --text-secondary: #94a3b8;
+            --border: #475569;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background-color: var(--bg-dark);
+            color: var(--text-primary);
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 20px 0;
+            border-bottom: 1px solid var(--border);
+            margin-bottom: 20px;
+        }
+
+        header h1 {
+            font-size: 1.8rem;
+            font-weight: 600;
+        }
+
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .status-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+
+        .status-dot.running { background-color: var(--success); }
+        .status-dot.stopped { background-color: var(--danger); }
+        .status-dot.warning { background-color: var(--warning); }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .controls {
+            display: flex;
+            gap: 10px;
+        }
+
+        button {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+
+        button.primary { background-color: var(--primary); color: white; }
+        button.success { background-color: var(--success); color: white; }
+        button.danger { background-color: var(--danger); color: white; }
+        button:hover { opacity: 0.9; transform: translateY(-1px); }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+
+        .card {
+            background-color: var(--bg-card);
+            border-radius: 12px;
+            padding: 20px;
+            border: 1px solid var(--border);
+        }
+
+        .card h2 {
+            font-size: 0.9rem;
+            text-transform: uppercase;
+            color: var(--text-secondary);
+            margin-bottom: 10px;
+        }
+
+        .stat-value {
+            font-size: 2.5rem;
+            font-weight: 700;
+        }
+
+        .stat-label {
+            color: var(--text-secondary);
+            font-size: 0.85rem;
+        }
+
+        .stat-value.ok { color: var(--success); }
+        .stat-value.nok { color: var(--danger); }
+        .stat-value.error { color: var(--warning); }
+
+        .section {
+            background-color: var(--bg-card);
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+            border: 1px solid var(--border);
+        }
+
+        .section-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+
+        .section-header h2 {
+            font-size: 1.2rem;
+        }
+
+        /* Alerts */
+        .alerts-container {
+            max-height: 300px;
+            overflow-y: auto;
+        }
+
+        .alert {
+            display: flex;
+            align-items: center;
+            padding: 12px;
+            background-color: rgba(220, 38, 38, 0.1);
+            border-left: 4px solid var(--danger);
+            border-radius: 0 8px 8px 0;
+            margin-bottom: 10px;
+        }
+
+        .alert.ok {
+            background-color: rgba(22, 163, 74, 0.1);
+            border-left-color: var(--success);
+        }
+
+        .alert-icon {
+            font-size: 1.5rem;
+            margin-right: 12px;
+        }
+
+        .alert-content {
+            flex: 1;
+        }
+
+        .alert-title {
+            font-weight: 600;
+            margin-bottom: 2px;
+        }
+
+        .alert-details {
+            color: var(--text-secondary);
+            font-size: 0.85rem;
+        }
+
+        .alert-time {
+            color: var(--text-secondary);
+            font-size: 0.8rem;
+        }
+
+        /* Results table */
+        .results-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .results-table th,
+        .results-table td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .results-table th {
+            color: var(--text-secondary);
+            font-weight: 500;
+            font-size: 0.85rem;
+            text-transform: uppercase;
+        }
+
+        .results-table tr:hover {
+            background-color: rgba(255, 255, 255, 0.05);
+        }
+
+        .badge {
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .badge.ok { background-color: var(--success); }
+        .badge.nok { background-color: var(--danger); }
+        .badge.damage { background-color: #7c3aed; }
+        .badge.scratch { background-color: #0891b2; }
+        .badge.dent { background-color: #c026d3; }
+        .badge.error { background-color: var(--warning); }
+
+        /* Modal */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: rgba(0, 0, 0, 0.7);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .modal-overlay.active {
+            display: flex;
+        }
+
+        .modal {
+            background-color: var(--bg-card);
+            border-radius: 12px;
+            padding: 24px;
+            max-width: 800px;
+            width: 90%;
+            max-height: 90vh;
+            overflow-y: auto;
+        }
+
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        .modal-close {
+            background: none;
+            border: none;
+            color: var(--text-secondary);
+            font-size: 1.5rem;
+            cursor: pointer;
+        }
+
+        .modal-image {
+            width: 100%;
+            max-height: 400px;
+            object-fit: contain;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+
+        .classification-buttons {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        /* Rate bars */
+        .rate-bar {
+            height: 8px;
+            background-color: var(--border);
+            border-radius: 4px;
+            overflow: hidden;
+            margin-top: 10px;
+        }
+
+        .rate-fill {
+            height: 100%;
+            border-radius: 4px;
+            transition: width 0.3s ease;
+        }
+
+        .rate-fill.ok { background-color: var(--success); }
+        .rate-fill.nok { background-color: var(--danger); }
+
+        /* Toast notifications */
+        .toast-container {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            z-index: 2000;
+        }
+
+        .toast {
+            background-color: var(--bg-card);
+            border-radius: 8px;
+            padding: 16px 20px;
+            margin-bottom: 10px;
+            border-left: 4px solid var(--primary);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+            animation: slideIn 0.3s ease;
+        }
+
+        .toast.success { border-left-color: var(--success); }
+        .toast.error { border-left-color: var(--danger); }
+        .toast.warning { border-left-color: var(--warning); }
+
+        @keyframes slideIn {
+            from { transform: translateX(100%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            header {
+                flex-direction: column;
+                gap: 15px;
+            }
+
+            .grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: var(--bg-dark);
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: var(--border);
+            border-radius: 4px;
+        }
+
+        .empty-state {
+            text-align: center;
+            color: var(--text-secondary);
+            padding: 40px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div>
+                <h1>Quality Control Dashboard</h1>
+                <div class="status-indicator">
+                    <span class="status-dot" id="statusDot"></span>
+                    <span id="statusText">Connecting...</span>
+                </div>
+            </div>
+            <div class="controls">
+                <button class="primary" id="triggerBtn" onclick="triggerInspection()">Manual Inspection</button>
+                <button class="success" id="startBtn" onclick="startSystem()">Start</button>
+                <button class="danger" id="stopBtn" onclick="stopSystem()">Stop</button>
+            </div>
+        </header>
+
+        <!-- Statistics Cards -->
+        <div class="grid">
+            <div class="card">
+                <h2>Total Inspections</h2>
+                <div class="stat-value" id="totalInspections">0</div>
+                <div class="stat-label">Session: <span id="sessionInspections">0</span></div>
+            </div>
+            <div class="card">
+                <h2>OK Parts</h2>
+                <div class="stat-value ok" id="okCount">0</div>
+                <div class="stat-label">Rate: <span id="okRate">0</span>%</div>
+                <div class="rate-bar">
+                    <div class="rate-fill ok" id="okBar" style="width: 0%"></div>
+                </div>
+            </div>
+            <div class="card">
+                <h2>NOK Parts</h2>
+                <div class="stat-value nok" id="nokCount">0</div>
+                <div class="stat-label">Rate: <span id="nokRate">0</span>%</div>
+                <div class="rate-bar">
+                    <div class="rate-fill nok" id="nokBar" style="width: 0%"></div>
+                </div>
+            </div>
+            <div class="card">
+                <h2>Avg. Processing Time</h2>
+                <div class="stat-value" id="avgTime">0</div>
+                <div class="stat-label">milliseconds</div>
+            </div>
+        </div>
+
+        <!-- Alerts Section -->
+        <div class="section">
+            <div class="section-header">
+                <h2>Anomaly Alerts</h2>
+                <button class="primary" onclick="clearAlerts()">Clear All</button>
+            </div>
+            <div class="alerts-container" id="alertsContainer">
+                <div class="empty-state">No alerts yet</div>
+            </div>
+        </div>
+
+        <!-- Recent Results Table -->
+        <div class="section">
+            <div class="section-header">
+                <h2>Recent Inspections</h2>
+                <button class="primary" onclick="refreshResults()">Refresh</button>
+            </div>
+            <table class="results-table">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Time</th>
+                        <th>Result</th>
+                        <th>Defect Type</th>
+                        <th>Confidence</th>
+                        <th>Processing</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="resultsBody">
+                    <tr>
+                        <td colspan="7" class="empty-state">No inspections yet</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Detail Modal -->
+    <div class="modal-overlay" id="detailModal">
+        <div class="modal">
+            <div class="modal-header">
+                <h2 id="modalTitle">Inspection Details</h2>
+                <button class="modal-close" onclick="closeModal()">&times;</button>
+            </div>
+            <img class="modal-image" id="modalImage" src="" alt="Inspection Image">
+            <div id="modalDetails"></div>
+            <h3 style="margin: 20px 0 10px;">Operator Classification</h3>
+            <div class="classification-buttons">
+                <button class="success" onclick="classifyResult('ok')">Confirm OK</button>
+                <button class="danger" onclick="classifyResult('nok')">Confirm NOK</button>
+                <button style="background: #7c3aed; color: white;" onclick="classifyResult('damage')">Damage</button>
+                <button style="background: #0891b2; color: white;" onclick="classifyResult('scratch')">Scratch</button>
+                <button style="background: #c026d3; color: white;" onclick="classifyResult('dent')">Dent</button>
+                <button style="background: #64748b; color: white;" onclick="classifyResult('false_positive')">False Positive</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast Container -->
+    <div class="toast-container" id="toastContainer"></div>
+
+    <script>
+        // Socket.IO connection
+        const socket = io();
+        let currentInspectionId = null;
+
+        // Connection handlers
+        socket.on('connect', () => {
+            console.log('Connected to server');
+            showToast('Connected to server', 'success');
+        });
+
+        socket.on('disconnect', () => {
+            console.log('Disconnected from server');
+            updateStatus('stopped', 'Disconnected');
+            showToast('Connection lost', 'error');
+        });
+
+        // System status updates
+        socket.on('system_status', (data) => {
+            updateStatus(data.status, data.status === 'running' ? 'Running' : 'Stopped');
+            document.getElementById('startBtn').disabled = data.status === 'running';
+            document.getElementById('stopBtn').disabled = data.status !== 'running';
+        });
+
+        // Statistics updates
+        socket.on('statistics_update', (stats) => {
+            updateStatistics(stats);
+        });
+
+        // Inspection result
+        socket.on('inspection_result', (result) => {
+            addResultToTable(result);
+        });
+
+        // Anomaly alert
+        socket.on('anomaly_alert', (data) => {
+            addAlert(data);
+            showToast(`Anomaly detected: ${data.defect_type}`, 'warning');
+        });
+
+        // Results update
+        socket.on('results_update', (data) => {
+            updateResultsTable(data.results);
+        });
+
+        // Update status indicator
+        function updateStatus(status, text) {
+            const dot = document.getElementById('statusDot');
+            const statusText = document.getElementById('statusText');
+
+            dot.className = 'status-dot ' + status;
+            statusText.textContent = text;
+        }
+
+        // Update statistics display
+        function updateStatistics(stats) {
+            const lifetime = stats.lifetime || {};
+            const session = stats.session || {};
+
+            document.getElementById('totalInspections').textContent = lifetime.total_inspections || 0;
+            document.getElementById('sessionInspections').textContent = session.inspections || 0;
+            document.getElementById('okCount').textContent = lifetime.ok_count || 0;
+            document.getElementById('nokCount').textContent = lifetime.nok_count || 0;
+
+            const total = (lifetime.ok_count || 0) + (lifetime.nok_count || 0);
+            const okRate = total > 0 ? ((lifetime.ok_count / total) * 100).toFixed(1) : 0;
+            const nokRate = total > 0 ? ((lifetime.nok_count / total) * 100).toFixed(1) : 0;
+
+            document.getElementById('okRate').textContent = okRate;
+            document.getElementById('nokRate').textContent = nokRate;
+            document.getElementById('okBar').style.width = okRate + '%';
+            document.getElementById('nokBar').style.width = nokRate + '%';
+
+            document.getElementById('avgTime').textContent =
+                (session.avg_processing_time || 0).toFixed(0);
+        }
+
+        // Add alert to alerts container
+        function addAlert(data) {
+            const container = document.getElementById('alertsContainer');
+            const emptyState = container.querySelector('.empty-state');
+            if (emptyState) emptyState.remove();
+
+            const alert = document.createElement('div');
+            alert.className = 'alert';
+            alert.innerHTML = `
+                <span class="alert-icon">⚠️</span>
+                <div class="alert-content">
+                    <div class="alert-title">${data.defect_type.toUpperCase()} Detected</div>
+                    <div class="alert-details">
+                        Confidence: ${(data.confidence * 100).toFixed(1)}% |
+                        ID: ${data.inspection_id}
+                    </div>
+                </div>
+                <span class="alert-time">${new Date().toLocaleTimeString()}</span>
+            `;
+            alert.onclick = () => showDetail(data.inspection_id);
+
+            container.insertBefore(alert, container.firstChild);
+
+            // Keep only last 20 alerts
+            while (container.children.length > 20) {
+                container.removeChild(container.lastChild);
+            }
+        }
+
+        // Add result to table
+        function addResultToTable(result) {
+            const tbody = document.getElementById('resultsBody');
+            const emptyState = tbody.querySelector('.empty-state');
+            if (emptyState) emptyState.parentElement.remove();
+
+            const tr = document.createElement('tr');
+            const isAnomaly = result.is_anomaly;
+            const badgeClass = isAnomaly ? (result.defect_type || 'nok') : 'ok';
+
+            tr.innerHTML = `
+                <td>${result.inspection_id || '-'}</td>
+                <td>${new Date(result.timestamp).toLocaleString()}</td>
+                <td><span class="badge ${isAnomaly ? 'nok' : 'ok'}">${isAnomaly ? 'NOK' : 'OK'}</span></td>
+                <td><span class="badge ${badgeClass}">${result.defect_type || 'ok'}</span></td>
+                <td>${((result.confidence || 0) * 100).toFixed(1)}%</td>
+                <td>${(result.processing_time_ms || 0).toFixed(0)} ms</td>
+                <td><button class="primary" onclick="showDetail('${result.inspection_id}')">View</button></td>
+            `;
+
+            tbody.insertBefore(tr, tbody.firstChild);
+
+            // Keep only last 50 rows
+            while (tbody.children.length > 50) {
+                tbody.removeChild(tbody.lastChild);
+            }
+        }
+
+        // Update entire results table
+        function updateResultsTable(results) {
+            const tbody = document.getElementById('resultsBody');
+            tbody.innerHTML = '';
+
+            if (!results || results.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="7" class="empty-state">No inspections yet</td></tr>';
+                return;
+            }
+
+            results.forEach(result => {
+                const tr = document.createElement('tr');
+                const isAnomaly = result.is_anomaly;
+                const badgeClass = isAnomaly ? (result.defect_type || 'nok') : 'ok';
+
+                tr.innerHTML = `
+                    <td>${result.inspection_id || '-'}</td>
+                    <td>${new Date(result.timestamp).toLocaleString()}</td>
+                    <td><span class="badge ${isAnomaly ? 'nok' : 'ok'}">${isAnomaly ? 'NOK' : 'OK'}</span></td>
+                    <td><span class="badge ${badgeClass}">${result.defect_type || 'ok'}</span></td>
+                    <td>${((result.confidence || 0) * 100).toFixed(1)}%</td>
+                    <td>${(result.processing_time_ms || 0).toFixed(0)} ms</td>
+                    <td><button class="primary" onclick="showDetail('${result.inspection_id}')">View</button></td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        // Show detail modal
+        async function showDetail(inspectionId) {
+            currentInspectionId = inspectionId;
+
+            try {
+                const response = await fetch(`/api/result/${inspectionId}`);
+                const data = await response.json();
+
+                if (data.success) {
+                    const result = data.result;
+                    document.getElementById('modalTitle').textContent = `Inspection ${inspectionId}`;
+
+                    // Set image
+                    const imagePath = result.heatmap_path || result.image_path;
+                    if (imagePath) {
+                        document.getElementById('modalImage').src = `/api/image${imagePath}`;
+                    }
+
+                    // Set details
+                    document.getElementById('modalDetails').innerHTML = `
+                        <p><strong>Time:</strong> ${new Date(result.timestamp).toLocaleString()}</p>
+                        <p><strong>Result:</strong> ${result.is_anomaly ? 'NOK' : 'OK'}</p>
+                        <p><strong>Defect Type:</strong> ${result.defect_type || 'N/A'}</p>
+                        <p><strong>Confidence:</strong> ${((result.confidence || 0) * 100).toFixed(1)}%</p>
+                        <p><strong>Anomaly Score:</strong> ${(result.anomaly_score || 0).toFixed(4)}</p>
+                        <p><strong>Processing Time:</strong> ${(result.processing_time_ms || 0).toFixed(0)} ms</p>
+                        ${result.operator_classification ?
+                            `<p><strong>Operator Classification:</strong> ${result.operator_classification}</p>` : ''}
+                    `;
+
+                    document.getElementById('detailModal').classList.add('active');
+                }
+            } catch (error) {
+                showToast('Failed to load details', 'error');
+            }
+        }
+
+        // Close modal
+        function closeModal() {
+            document.getElementById('detailModal').classList.remove('active');
+            currentInspectionId = null;
+        }
+
+        // Classify result
+        async function classifyResult(classification) {
+            if (!currentInspectionId) return;
+
+            try {
+                const response = await fetch('/api/classify', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        inspection_id: currentInspectionId,
+                        classification: classification
+                    })
+                });
+
+                const data = await response.json();
+                if (data.success) {
+                    showToast('Classification saved', 'success');
+                    closeModal();
+                    refreshResults();
+                } else {
+                    showToast('Failed to save classification', 'error');
+                }
+            } catch (error) {
+                showToast('Classification error', 'error');
+            }
+        }
+
+        // Control functions
+        async function startSystem() {
+            try {
+                await fetch('/api/control/start', { method: 'POST' });
+                showToast('System started', 'success');
+            } catch (error) {
+                showToast('Failed to start system', 'error');
+            }
+        }
+
+        async function stopSystem() {
+            try {
+                await fetch('/api/control/stop', { method: 'POST' });
+                showToast('System stopped', 'success');
+            } catch (error) {
+                showToast('Failed to stop system', 'error');
+            }
+        }
+
+        async function triggerInspection() {
+            try {
+                const response = await fetch('/api/control/trigger', { method: 'POST' });
+                const data = await response.json();
+                if (data.success) {
+                    showToast('Inspection triggered', 'success');
+                }
+            } catch (error) {
+                showToast('Failed to trigger inspection', 'error');
+            }
+        }
+
+        function refreshResults() {
+            socket.emit('request_results', { count: 50 });
+        }
+
+        function clearAlerts() {
+            const container = document.getElementById('alertsContainer');
+            container.innerHTML = '<div class="empty-state">No alerts yet</div>';
+        }
+
+        // Toast notification
+        function showToast(message, type = 'info') {
+            const container = document.getElementById('toastContainer');
+            const toast = document.createElement('div');
+            toast.className = `toast ${type}`;
+            toast.textContent = message;
+            container.appendChild(toast);
+
+            setTimeout(() => {
+                toast.remove();
+            }, 3000);
+        }
+
+        // Initial load
+        window.onload = () => {
+            // Request initial data
+            setTimeout(() => {
+                socket.emit('request_statistics');
+                socket.emit('request_results', { count: 50 });
+            }, 500);
+        };
+
+        // Close modal on escape
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') closeModal();
+        });
+
+        // Close modal on overlay click
+        document.getElementById('detailModal').addEventListener('click', (e) => {
+            if (e.target.classList.contains('modal-overlay')) closeModal();
+        });
+    </script>
+</body>
+</html>

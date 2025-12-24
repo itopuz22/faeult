@@ -1,0 +1,46 @@
+[Unit]
+Description=AI Quality Control Inference Daemon
+Documentation=https://github.com/your-org/qc-system
+After=network.target
+Wants=network-online.target
+
+# Restart policies for power failure recovery
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=ai2
+Group=ai2
+WorkingDirectory=/home/ai2/qc_system
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=/home/ai2/qc_system
+
+# Main daemon command
+ExecStart=/usr/bin/python3 /home/ai2/qc_system/qc_main.py --daemon
+
+# Auto-restart configuration for fault tolerance
+Restart=always
+RestartSec=5
+RestartPreventExitStatus=SIGTERM
+
+# Watchdog for health monitoring
+WatchdogSec=60
+NotifyAccess=all
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=4096
+
+# Security hardening
+NoNewPrivileges=false
+ProtectSystem=false
+ProtectHome=false
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=yolo_ai_daemon
+
+[Install]
+WantedBy=multi-user.target

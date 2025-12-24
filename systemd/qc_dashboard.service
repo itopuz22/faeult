@@ -1,0 +1,42 @@
+[Unit]
+Description=Quality Control Dashboard Web Server
+Documentation=https://github.com/your-org/qc-system
+After=network.target yolo_ai_daemon.service
+Requires=yolo_ai_daemon.service
+
+# Restart policies for power failure recovery
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=ai2
+Group=ai2
+WorkingDirectory=/home/ai2/qc_system
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=/home/ai2/qc_system
+Environment=FLASK_ENV=production
+
+# Dashboard server command
+ExecStart=/usr/bin/python3 /home/ai2/qc_system/dashboard.py --host 0.0.0.0 --port 5000
+
+# Auto-restart configuration for fault tolerance
+Restart=always
+RestartSec=5
+RestartPreventExitStatus=SIGTERM
+
+# Resource limits
+LimitNOFILE=65536
+
+# Security
+NoNewPrivileges=false
+ProtectSystem=false
+ProtectHome=false
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=qc_dashboard
+
+[Install]
+WantedBy=multi-user.target

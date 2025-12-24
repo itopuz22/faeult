@@ -1,0 +1,21 @@
+# Core dependencies
+numpy>=1.21.0
+Pillow>=9.0.0
+
+# Web framework
+Flask>=2.0.0
+Flask-SocketIO>=5.0.0
+python-socketio>=5.0.0
+python-engineio>=4.0.0
+eventlet>=0.33.0
+
+# Optional: PyTorch for full model support
+# torch>=1.9.0
+# torchvision>=0.10.0
+
+# Raspberry Pi specific (install on target device)
+# picamera2
+# gpiod
+
+# Utilities
+python-dateutil>=2.8.0
