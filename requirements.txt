@@ -1,6 +1,8 @@
 # Core dependencies
 numpy>=1.21.0
 Pillow>=9.0.0
+scipy>=1.7.0
+scikit-learn>=1.0.0
 
 # Web framework
 Flask>=2.0.0
@@ -9,7 +11,8 @@ python-socketio>=5.0.0
 python-engineio>=4.0.0
 eventlet>=0.33.0
 
-# Optional: PyTorch for full model support
+# PyTorch for model support (Windows training)
+# Install from https://pytorch.org/get-started/locally/
 # torch>=1.9.0
 # torchvision>=0.10.0
 
@@ -19,3 +22,4 @@ eventlet>=0.33.0
 
 # Utilities
 python-dateutil>=2.8.0
+tqdm>=4.60.0

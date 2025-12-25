@@ -346,7 +346,7 @@ class PatchCoreModel:
     def _coreset_sampling(self, features: np.ndarray, ratio: float) -> np.ndarray:
         """
         Perform coreset sampling to reduce memory bank size.
-        Uses greedy furthest point sampling.
+        Uses efficient random projection-based sampling for large datasets.
         """
         n_samples = int(features.shape[0] * ratio)
         n_samples = max(1, min(n_samples, features.shape[0]))
@@ -354,23 +354,108 @@ class PatchCoreModel:
         if n_samples >= features.shape[0]:
             return features
 
-        # Initialize with random point
-        indices = [np.random.randint(features.shape[0])]
+        n_features = features.shape[0]
+        logger.info(f"  Coreset: selecting {n_samples} from {n_features} patches...")
 
-        # Greedy furthest point sampling
-        for _ in range(n_samples - 1):
-            # Compute distances to nearest selected point
-            selected = features[indices]
-            distances = np.min(
-                np.linalg.norm(
-                    features[:, np.newaxis] - selected,
-                    axis=2
-                ),
-                axis=1
+        # For large datasets, use faster methods
+        if n_features > 10000:
+            return self._fast_coreset_sampling(features, n_samples)
+        else:
+            return self._greedy_coreset_sampling(features, n_samples)
+
+    def _fast_coreset_sampling(self, features: np.ndarray, n_samples: int) -> np.ndarray:
+        """
+        Fast coreset sampling using k-means clustering or random projection.
+        Much faster for large datasets (O(n*k) instead of O(n²)).
+        """
+        try:
+            from sklearn.cluster import MiniBatchKMeans
+
+            logger.info("  Using MiniBatchKMeans for fast coreset sampling...")
+
+            # Use MiniBatchKMeans for fast clustering
+            kmeans = MiniBatchKMeans(
+                n_clusters=n_samples,
+                batch_size=min(1024, n_samples),
+                n_init=1,
+                max_iter=50,
+                random_state=42
             )
-            # Select furthest point
-            new_idx = np.argmax(distances)
+            kmeans.fit(features)
+
+            # Return cluster centers as coreset
+            return kmeans.cluster_centers_.astype(np.float32)
+
+        except ImportError:
+            logger.info("  sklearn not available, using random sampling with stratification...")
+            return self._stratified_random_sampling(features, n_samples)
+
+    def _stratified_random_sampling(self, features: np.ndarray, n_samples: int) -> np.ndarray:
+        """
+        Stratified random sampling based on feature norms.
+        Faster than greedy but maintains diversity.
+        """
+        # Compute feature norms for stratification
+        norms = np.linalg.norm(features, axis=1)
+
+        # Create strata based on norm percentiles
+        n_strata = min(10, n_samples)
+        percentiles = np.percentile(norms, np.linspace(0, 100, n_strata + 1))
+
+        indices = []
+        samples_per_stratum = n_samples // n_strata
+
+        for i in range(n_strata):
+            low, high = percentiles[i], percentiles[i + 1]
+            if i == n_strata - 1:
+                mask = (norms >= low) & (norms <= high)
+            else:
+                mask = (norms >= low) & (norms < high)
+
+            stratum_indices = np.where(mask)[0]
+            if len(stratum_indices) > 0:
+                n_take = min(samples_per_stratum, len(stratum_indices))
+                chosen = np.random.choice(stratum_indices, n_take, replace=False)
+                indices.extend(chosen.tolist())
+
+        # Fill remaining with random samples
+        remaining = n_samples - len(indices)
+        if remaining > 0:
+            available = list(set(range(len(features))) - set(indices))
+            if available:
+                extra = np.random.choice(available, min(remaining, len(available)), replace=False)
+                indices.extend(extra.tolist())
+
+        return features[indices[:n_samples]]
+
+    def _greedy_coreset_sampling(self, features: np.ndarray, n_samples: int) -> np.ndarray:
+        """
+        Original greedy furthest point sampling for smaller datasets.
+        O(n*k) complexity with optimized distance updates.
+        """
+        n_features = features.shape[0]
+
+        # Initialize with random point
+        indices = [np.random.randint(n_features)]
+
+        # Track minimum distances to selected set
+        min_distances = np.full(n_features, np.inf)
+
+        # Greedy furthest point sampling with incremental updates
+        for i in range(n_samples - 1):
+            # Update distances only for the last added point
+            last_selected = features[indices[-1]]
+            new_distances = np.linalg.norm(features - last_selected, axis=1)
+            min_distances = np.minimum(min_distances, new_distances)
+
+            # Select furthest point (excluding already selected)
+            min_distances[indices[-1]] = -1  # Exclude last selected
+            new_idx = np.argmax(min_distances)
             indices.append(new_idx)
+
+            # Progress logging for longer operations
+            if (i + 1) % 500 == 0:
+                logger.info(f"    Coreset progress: {i + 1}/{n_samples - 1}")
 
         return features[indices]
 
