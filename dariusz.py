@@ -365,38 +365,18 @@ class PatchCoreModel:
 
     def _fast_coreset_sampling(self, features: np.ndarray, n_samples: int) -> np.ndarray:
         """
-        Fast coreset sampling using k-means clustering or random projection.
-        Much faster for large datasets (O(n*k) instead of O(n²)).
+        Fast coreset sampling using random selection.
+        Instant O(n) complexity - much faster than clustering approaches.
+        Random sampling is effective for PatchCore anomaly detection.
         """
-        try:
-            from sklearn.cluster import MiniBatchKMeans
-            import os
+        logger.info("  Using fast random sampling for coreset...")
 
-            # Fix Windows MKL memory leak by setting threads
-            os.environ.setdefault('OMP_NUM_THREADS', '4')
+        # Random sampling is simple and effective
+        indices = np.random.choice(len(features), n_samples, replace=False)
+        coreset = features[indices].astype(np.float32)
 
-            logger.info("  Using MiniBatchKMeans for fast coreset sampling...")
-
-            # Use batch_size >= 4096 to avoid Windows MKL memory leak
-            batch_size = max(4096, min(n_samples, len(features) // 10))
-
-            kmeans = MiniBatchKMeans(
-                n_clusters=n_samples,
-                batch_size=batch_size,
-                n_init=1,
-                max_iter=50,
-                random_state=42,
-                verbose=0
-            )
-            kmeans.fit(features)
-
-            # Return cluster centers as coreset
-            logger.info(f"  Coreset sampling complete: {n_samples} cluster centers")
-            return kmeans.cluster_centers_.astype(np.float32)
-
-        except ImportError:
-            logger.info("  sklearn not available, using random sampling with stratification...")
-            return self._stratified_random_sampling(features, n_samples)
+        logger.info(f"  Coreset sampling complete: {n_samples} samples selected")
+        return coreset
 
     def _stratified_random_sampling(self, features: np.ndarray, n_samples: int) -> np.ndarray:
         """
