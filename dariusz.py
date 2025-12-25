@@ -77,15 +77,46 @@ class FeatureExtractor:
     """
     WideResNet50 feature extractor for PatchCore.
     Uses intermediate layers for rich feature representation.
+
+    WideResNet50-2 layer output dimensions (for 224x224 input):
+    - layer1: 256 channels, 56x56 spatial
+    - layer2: 512 channels, 28x28 spatial  <- Used
+    - layer3: 1024 channels, 14x14 spatial <- Used
+    - layer4: 2048 channels, 7x7 spatial
+
+    Combined feature dimension: 512 + 1024 = 1536
+    Output spatial resolution: 28x28 = 784 patches (after upsampling layer3)
     """
 
-    def __init__(self, device: str = 'cpu'):
+    def __init__(self, device: str = 'cpu', input_size: int = 224):
         self.device = device
+        self.input_size = input_size
         self.model = None
         self.transform = None
         self.feature_layers = ['layer2', 'layer3']
         self._hooks = []
         self._features = {}
+
+        # Feature dimensions for WideResNet50-2
+        self.layer_channels = {
+            'layer1': 256,
+            'layer2': 512,
+            'layer3': 1024,
+            'layer4': 2048
+        }
+
+        # Spatial sizes for 224x224 input
+        self.layer_spatial = {
+            'layer1': 56,
+            'layer2': 28,
+            'layer3': 14,
+            'layer4': 7
+        }
+
+        # Target spatial size for feature alignment (use layer2's resolution)
+        self.target_spatial = 28
+        self.n_patches = self.target_spatial * self.target_spatial  # 784 patches
+        self.feature_dim = sum(self.layer_channels[l] for l in self.feature_layers)  # 1536
 
     def _get_hook(self, name: str):
         """Create a forward hook to capture intermediate features"""
@@ -94,16 +125,26 @@ class FeatureExtractor:
         return hook
 
     def load_model(self):
-        """Load the WideResNet50 model"""
+        """Load the WideResNet50-2 model"""
         try:
             import torch
             import torchvision.models as models
             import torchvision.transforms as transforms
 
-            logger.info("Loading WideResNet50 model...")
+            logger.info("Loading WideResNet50-2 model...")
+            logger.info(f"  Input size: {self.input_size}x{self.input_size}")
+            logger.info(f"  Feature layers: {self.feature_layers}")
+            logger.info(f"  Feature dimension: {self.feature_dim}")
+            logger.info(f"  Number of patches: {self.n_patches}")
 
-            # Load pretrained WideResNet50
-            self.model = models.wide_resnet50_2(pretrained=True)
+            # Load pretrained WideResNet50-2
+            # Try new API first, fall back to old API
+            try:
+                from torchvision.models import Wide_ResNet50_2_Weights
+                self.model = models.wide_resnet50_2(weights=Wide_ResNet50_2_Weights.IMAGENET1K_V1)
+            except (ImportError, AttributeError):
+                self.model = models.wide_resnet50_2(pretrained=True)
+
             self.model = self.model.to(self.device)
             self.model.eval()
 
@@ -113,9 +154,9 @@ class FeatureExtractor:
                 hook = layer.register_forward_hook(self._get_hook(name))
                 self._hooks.append(hook)
 
-            # Define image transforms
+            # Define image transforms (ImageNet normalization)
             self.transform = transforms.Compose([
-                transforms.Resize((224, 224)),
+                transforms.Resize((self.input_size, self.input_size)),
                 transforms.ToTensor(),
                 transforms.Normalize(
                     mean=[0.485, 0.456, 0.406],
@@ -123,7 +164,8 @@ class FeatureExtractor:
                 )
             ])
 
-            logger.info("WideResNet50 model loaded successfully")
+            logger.info("WideResNet50-2 model loaded successfully")
+            self._print_model_info()
             return True
 
         except ImportError as e:
@@ -133,13 +175,30 @@ class FeatureExtractor:
             logger.error(f"Failed to load model: {e}")
             return False
 
-    def extract_features(self, image: Image.Image) -> np.ndarray:
-        """Extract patch features from an image"""
+    def _print_model_info(self):
+        """Print model layer information"""
         try:
             import torch
+            total_params = sum(p.numel() for p in self.model.parameters())
+            logger.info(f"  Total parameters: {total_params:,}")
+        except Exception:
+            pass
+
+    def extract_features(self, image: Image.Image) -> Tuple[np.ndarray, int]:
+        """
+        Extract patch features from an image.
+
+        Returns:
+            Tuple of (features array, spatial_size)
+            - features: (n_patches, feature_dim) array
+            - spatial_size: spatial dimension (e.g., 28 for 28x28 patches)
+        """
+        try:
+            import torch
+            import torch.nn.functional as F
 
             if self.model is None:
-                raise RuntimeError("Model not loaded")
+                raise RuntimeError("Model not loaded. Call load_model() first.")
 
             # Preprocess image
             img_tensor = self.transform(image).unsqueeze(0).to(self.device)
@@ -148,45 +207,71 @@ class FeatureExtractor:
             with torch.no_grad():
                 _ = self.model(img_tensor)
 
-            # Combine features from multiple layers
-            features = []
-            for name in self.feature_layers:
-                feat = self._features[name]
-                # Reshape to (C, H*W) and transpose to (H*W, C)
-                b, c, h, w = feat.shape
-                feat_reshaped = feat.view(b, c, -1).permute(0, 2, 1)
-                features.append(feat_reshaped.cpu().numpy()[0])
+            # Get layer2 features: (1, 512, 28, 28)
+            feat_layer2 = self._features['layer2']
+            b, c2, h2, w2 = feat_layer2.shape
 
-            # Concatenate features from all layers
-            combined = np.concatenate(features, axis=1)
-            return combined
+            # Get layer3 features: (1, 1024, 14, 14)
+            feat_layer3 = self._features['layer3']
+            b, c3, h3, w3 = feat_layer3.shape
+
+            # Upsample layer3 to match layer2 spatial dimensions (14x14 -> 28x28)
+            feat_layer3_upsampled = F.interpolate(
+                feat_layer3,
+                size=(h2, w2),
+                mode='bilinear',
+                align_corners=False
+            )
+
+            # Concatenate along channel dimension: (1, 1536, 28, 28)
+            combined = torch.cat([feat_layer2, feat_layer3_upsampled], dim=1)
+
+            # Reshape to (n_patches, feature_dim): (784, 1536)
+            # From (1, C, H, W) -> (H*W, C)
+            combined = combined.squeeze(0)  # (C, H, W)
+            combined = combined.permute(1, 2, 0)  # (H, W, C)
+            combined = combined.reshape(-1, combined.shape[-1])  # (H*W, C)
+
+            features = combined.cpu().numpy()
+
+            return features, h2
 
         except ImportError:
             # Fallback: simulated feature extraction
             return self._simulate_features(image)
 
-    def _simulate_features(self, image: Image.Image) -> np.ndarray:
+    def _simulate_features(self, image: Image.Image) -> Tuple[np.ndarray, int]:
         """Simulate feature extraction when PyTorch is not available"""
         # Convert image to numpy array
-        img_array = np.array(image.resize((224, 224)))
+        img_array = np.array(image.resize((self.input_size, self.input_size)))
 
-        # Generate simulated features based on image statistics
+        # Generate deterministic features based on image content
         np.random.seed(int(hashlib.md5(img_array.tobytes()).hexdigest()[:8], 16) % 2**32)
 
-        # Create patch-like features
-        n_patches = 49  # 7x7 grid
-        feature_dim = 1536  # Combined feature dimension
+        # Create patch-like features matching real model output
+        spatial_size = self.target_spatial  # 28
+        n_patches = spatial_size * spatial_size  # 784
+        feature_dim = self.feature_dim  # 1536
 
         features = np.random.randn(n_patches, feature_dim).astype(np.float32)
 
-        # Add some image-dependent variation
-        for i in range(n_patches):
-            row, col = divmod(i, 7)
-            patch_region = img_array[row*32:(row+1)*32, col*32:(col+1)*32]
-            if patch_region.size > 0:
-                features[i] += np.std(patch_region) * 0.1
+        # Add image-dependent variation based on local statistics
+        patch_size = self.input_size // spatial_size  # 8 pixels per patch
 
-        return features
+        for i in range(n_patches):
+            row, col = divmod(i, spatial_size)
+            y_start = row * patch_size
+            x_start = col * patch_size
+            patch_region = img_array[y_start:y_start+patch_size, x_start:x_start+patch_size]
+
+            if patch_region.size > 0:
+                # Add local statistics to features
+                local_mean = np.mean(patch_region) / 255.0
+                local_std = np.std(patch_region) / 255.0
+                features[i, :512] += local_mean * 0.5  # layer2 portion
+                features[i, 512:] += local_std * 0.5   # layer3 portion
+
+        return features, spatial_size
 
     def cleanup(self):
         """Remove hooks and free memory"""
@@ -194,6 +279,16 @@ class FeatureExtractor:
             hook.remove()
         self._hooks = []
         self._features = {}
+
+        if self.model is not None:
+            try:
+                import torch
+                del self.model
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
+        self.model = None
 
 
 class PatchCoreModel:
@@ -203,22 +298,33 @@ class PatchCoreModel:
     Uses coreset sampling (f_coreset=0.1) for efficient memory bank,
     adaptive thresholding based on ROC curve analysis, and generates
     both raw scores and visual heatmaps.
+
+    Architecture:
+    - Backbone: WideResNet50-2 pretrained on ImageNet
+    - Feature layers: layer2 (512ch, 28x28) + layer3 (1024ch, 14x14 -> upsampled to 28x28)
+    - Combined features: 1536 dimensions per patch
+    - Patches per image: 784 (28x28 grid)
     """
 
     def __init__(
         self,
         device: str = 'cpu',
         f_coreset: float = 0.1,
-        backbone: str = 'wide_resnet50_2'
+        backbone: str = 'wide_resnet50_2',
+        input_size: int = 224
     ):
         self.device = device
         self.f_coreset = f_coreset
         self.backbone = backbone
+        self.input_size = input_size
 
-        self.feature_extractor = FeatureExtractor(device)
+        self.feature_extractor = FeatureExtractor(device, input_size)
         self.memory_bank: Optional[np.ndarray] = None
         self.threshold: float = 0.5
         self.threshold_percentile: float = 95.0
+
+        # Spatial size for heatmap generation
+        self.spatial_size: int = 28
 
         # Statistics for adaptive thresholding
         self.train_scores: List[float] = []
@@ -232,7 +338,10 @@ class PatchCoreModel:
 
     def initialize(self) -> bool:
         """Initialize the feature extractor"""
-        return self.feature_extractor.load_model()
+        success = self.feature_extractor.load_model()
+        if success:
+            self.spatial_size = self.feature_extractor.target_spatial
+        return success
 
     def _coreset_sampling(self, features: np.ndarray, ratio: float) -> np.ndarray:
         """
@@ -274,14 +383,26 @@ class PatchCoreModel:
             progress_callback: Optional callback for progress updates
         """
         logger.info(f"Training PatchCore model on {len(image_paths)} images...")
+        logger.info(f"  Backbone: {self.backbone}")
+        logger.info(f"  Coreset ratio: {self.f_coreset}")
+        logger.info(f"  Device: {self.device}")
 
         all_features = []
+        successful_images = 0
 
         for i, img_path in enumerate(image_paths):
             try:
                 image = Image.open(img_path).convert('RGB')
-                features = self.feature_extractor.extract_features(image)
+                features, spatial_size = self.feature_extractor.extract_features(image)
+
+                # Update spatial size from first successful extraction
+                if successful_images == 0:
+                    self.spatial_size = spatial_size
+                    logger.info(f"  Spatial size: {spatial_size}x{spatial_size} ({spatial_size**2} patches)")
+                    logger.info(f"  Feature dimension: {features.shape[1]}")
+
                 all_features.append(features)
+                successful_images += 1
 
                 if progress_callback:
                     progress_callback(i + 1, len(image_paths))
@@ -294,15 +415,21 @@ class PatchCoreModel:
             logger.error("No features extracted from training images")
             return False
 
+        logger.info(f"Successfully processed {successful_images}/{len(image_paths)} images")
+
         # Combine all features
         combined_features = np.vstack(all_features)
-        logger.info(f"Extracted {combined_features.shape[0]} patch features")
+        logger.info(f"Extracted {combined_features.shape[0]} patch features "
+                   f"(shape: {combined_features.shape})")
 
         # Apply coreset sampling
+        logger.info(f"Applying coreset sampling (ratio: {self.f_coreset})...")
         self.memory_bank = self._coreset_sampling(combined_features, self.f_coreset)
-        logger.info(f"Memory bank size after coreset: {self.memory_bank.shape[0]}")
+        logger.info(f"Memory bank size after coreset: {self.memory_bank.shape[0]} "
+                   f"(reduced from {combined_features.shape[0]})")
 
         # Compute training scores for threshold estimation
+        logger.info("Computing training scores for threshold estimation...")
         self.train_scores = []
         for features in all_features:
             score = self._compute_anomaly_score(features)
@@ -312,9 +439,12 @@ class PatchCoreModel:
         self._compute_threshold()
 
         self.is_trained = True
-        self.training_images = len(image_paths)
+        self.training_images = successful_images
 
-        logger.info(f"Training complete. Threshold: {self.threshold:.4f}")
+        logger.info(f"Training complete!")
+        logger.info(f"  Memory bank: {self.memory_bank.shape}")
+        logger.info(f"  Threshold: {self.threshold:.4f}")
+        logger.info(f"  Score mean: {self.score_mean:.4f}, std: {self.score_std:.4f}")
         return True
 
     def _compute_threshold(self):
@@ -351,10 +481,25 @@ class PatchCoreModel:
         # Anomaly score is the maximum of minimum distances
         return float(np.max(distances))
 
-    def _compute_heatmap(self, features: np.ndarray, image_size: Tuple[int, int]) -> np.ndarray:
-        """Generate anomaly heatmap"""
+    def _compute_heatmap(
+        self,
+        features: np.ndarray,
+        image_size: Tuple[int, int],
+        spatial_size: Optional[int] = None
+    ) -> np.ndarray:
+        """
+        Generate anomaly heatmap.
+
+        Args:
+            features: Patch features (n_patches, feature_dim)
+            image_size: Original image size (width, height)
+            spatial_size: Spatial grid size (e.g., 28 for 28x28)
+
+        Returns:
+            Heatmap array of shape (height, width) with values 0-255
+        """
         if self.memory_bank is None:
-            return np.zeros((image_size[1], image_size[0]))
+            return np.zeros((image_size[1], image_size[0]), dtype=np.uint8)
 
         # Compute distance for each patch
         distances = []
@@ -363,18 +508,40 @@ class PatchCoreModel:
             min_dist = np.min(dists)
             distances.append(min_dist)
 
-        # Reshape to spatial grid (assuming 7x7 patches)
-        grid_size = int(np.sqrt(len(distances)))
-        if grid_size * grid_size != len(distances):
-            grid_size = 7  # Default
+        # Determine spatial grid size
+        if spatial_size is None:
+            spatial_size = self.spatial_size
 
-        heatmap = np.array(distances[:grid_size*grid_size]).reshape(grid_size, grid_size)
+        # Verify grid size matches number of patches
+        expected_patches = spatial_size * spatial_size
+        if len(distances) != expected_patches:
+            # Try to infer from actual number
+            inferred_size = int(np.sqrt(len(distances)))
+            if inferred_size * inferred_size == len(distances):
+                spatial_size = inferred_size
+            else:
+                logger.warning(f"Patch count mismatch: {len(distances)} vs expected {expected_patches}")
+                # Pad or truncate
+                if len(distances) < expected_patches:
+                    distances.extend([0.0] * (expected_patches - len(distances)))
+                else:
+                    distances = distances[:expected_patches]
 
-        # Normalize
+        # Reshape to spatial grid
+        heatmap = np.array(distances[:spatial_size*spatial_size]).reshape(spatial_size, spatial_size)
+
+        # Normalize to 0-1
         if heatmap.max() > heatmap.min():
             heatmap = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min())
 
-        # Resize to original image size
+        # Apply Gaussian smoothing for better visualization
+        try:
+            from scipy.ndimage import gaussian_filter
+            heatmap = gaussian_filter(heatmap, sigma=1.0)
+        except ImportError:
+            pass  # Skip smoothing if scipy not available
+
+        # Resize to original image size using PIL
         heatmap_img = Image.fromarray((heatmap * 255).astype(np.uint8))
         heatmap_resized = np.array(heatmap_img.resize(image_size, Image.BILINEAR))
 
@@ -457,14 +624,14 @@ class PatchCoreModel:
             logger.error(f"Failed to load image {image_path}: {e}")
             raise
 
-        # Extract features
-        features = self.feature_extractor.extract_features(image)
+        # Extract features (returns tuple: features, spatial_size)
+        features, spatial_size = self.feature_extractor.extract_features(image)
 
         # Compute anomaly score
         score = self._compute_anomaly_score(features)
 
         # Generate heatmap
-        heatmap = self._compute_heatmap(features, image_size)
+        heatmap = self._compute_heatmap(features, image_size, spatial_size)
 
         # Classify defect type
         defect_type, confidence = self._classify_defect(score, heatmap)
@@ -545,7 +712,11 @@ class PatchCoreModel:
             'score_std': self.score_std,
             'training_images': self.training_images,
             'f_coreset': self.f_coreset,
-            'backbone': self.backbone
+            'backbone': self.backbone,
+            'spatial_size': self.spatial_size,
+            'input_size': self.input_size,
+            'feature_dim': self.memory_bank.shape[1] if self.memory_bank is not None else 1536,
+            'version': '2.0'  # Version for compatibility checking
         }
 
         with open(path, 'wb') as f:
@@ -553,6 +724,9 @@ class PatchCoreModel:
 
         self.model_path = path
         logger.info(f"Model saved to {path}")
+        logger.info(f"  Memory bank: {self.memory_bank.shape}")
+        logger.info(f"  Threshold: {self.threshold:.4f}")
+        logger.info(f"  Spatial size: {self.spatial_size}x{self.spatial_size}")
 
     def load_model(self, path: str):
         """Load trained model from file"""
@@ -568,13 +742,17 @@ class PatchCoreModel:
         self.training_images = model_data.get('training_images', 0)
         self.f_coreset = model_data.get('f_coreset', 0.1)
         self.backbone = model_data.get('backbone', 'wide_resnet50_2')
+        self.spatial_size = model_data.get('spatial_size', 28)
+        self.input_size = model_data.get('input_size', 224)
 
         self.is_trained = True
         self.model_path = path
 
         logger.info(f"Model loaded from {path}")
-        logger.info(f"Memory bank size: {self.memory_bank.shape[0]}, "
-                   f"Threshold: {self.threshold:.4f}")
+        logger.info(f"  Memory bank: {self.memory_bank.shape}")
+        logger.info(f"  Threshold: {self.threshold:.4f}")
+        logger.info(f"  Spatial size: {self.spatial_size}x{self.spatial_size}")
+        logger.info(f"  Training images: {self.training_images}")
 
 
 class FolderWatcher:

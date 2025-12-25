@@ -64,6 +64,7 @@ class TrainingConfig:
         data_dir: str,
         output_path: str = 'patchcore_model.pkl',
         f_coreset: float = 0.1,
+        input_size: int = 224,
         image_extensions: Tuple[str, ...] = ('.jpg', '.jpeg', '.png', '.bmp'),
         device: str = 'auto',
         validation_dir: Optional[str] = None,
@@ -74,6 +75,7 @@ class TrainingConfig:
         self.data_dir = data_dir
         self.output_path = output_path
         self.f_coreset = f_coreset
+        self.input_size = input_size
         self.image_extensions = image_extensions
         self.validation_dir = validation_dir
         self.validation_split = validation_split
@@ -85,10 +87,18 @@ class TrainingConfig:
             try:
                 import torch
                 self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+                if self.device == 'cuda':
+                    gpu_name = torch.cuda.get_device_name(0)
+                    logger.info(f"Using GPU: {gpu_name}")
             except ImportError:
                 self.device = 'cpu'
         else:
             self.device = device
+
+        logger.info(f"Training configuration:")
+        logger.info(f"  Device: {self.device}")
+        logger.info(f"  Input size: {self.input_size}x{self.input_size}")
+        logger.info(f"  Coreset ratio: {self.f_coreset}")
 
 
 def collect_images(directory: str, extensions: Tuple[str, ...]) -> List[str]:
@@ -158,7 +168,8 @@ class ModelTrainer:
         self.config = config
         self.model = PatchCoreModel(
             device=config.device,
-            f_coreset=config.f_coreset
+            f_coreset=config.f_coreset,
+            input_size=config.input_size
         )
         self.training_stats: Dict[str, Any] = {}
 
@@ -257,6 +268,9 @@ class ModelTrainer:
             'validation_images': len(val_paths),
             'invalid_images': len(invalid_paths),
             'memory_bank_size': self.model.memory_bank.shape[0] if self.model.memory_bank is not None else 0,
+            'feature_dim': self.model.memory_bank.shape[1] if self.model.memory_bank is not None else 0,
+            'spatial_size': self.model.spatial_size,
+            'input_size': self.config.input_size,
             'threshold': self.model.threshold,
             'score_mean': self.model.score_mean,
             'score_std': self.model.score_std,
@@ -327,11 +341,19 @@ class ModelTrainer:
         print("\n" + "=" * 60)
         print("TRAINING COMPLETE")
         print("=" * 60)
+        print(f"\nModel Architecture:")
+        print(f"  - Backbone:           WideResNet50-2")
+        print(f"  - Feature layers:     layer2 (512ch) + layer3 (1024ch)")
+        print(f"  - Feature dimension:  {stats.get('feature_dim', 1536)}")
+        print(f"  - Input size:         {stats.get('input_size', 224)}x{stats.get('input_size', 224)}")
+        print(f"  - Spatial size:       {stats.get('spatial_size', 28)}x{stats.get('spatial_size', 28)} ({stats.get('spatial_size', 28)**2} patches/image)")
+
         print(f"\nTraining Statistics:")
         print(f"  - Training images:    {stats['training_images']}")
         print(f"  - Training time:      {stats['training_time_seconds']:.1f} seconds")
         print(f"  - Memory bank size:   {stats['memory_bank_size']} patches")
         print(f"  - Coreset ratio:      {stats['f_coreset']}")
+        print(f"  - Device used:        {stats['device']}")
 
         print(f"\nThreshold Analysis:")
         print(f"  - Threshold:          {stats['threshold']:.4f}")
@@ -413,7 +435,7 @@ class ModelTrainer:
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Train PatchCore anomaly detection model',
+        description='Train PatchCore anomaly detection model (WideResNet50-2 backbone)',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -429,6 +451,14 @@ Examples:
   # Adjust coreset ratio for memory/accuracy tradeoff
   python training.py --data ./good_images --f-coreset 0.05  # Less memory, faster
   python training.py --data ./good_images --f-coreset 0.2   # More accurate
+
+  # Use GPU for faster training
+  python training.py --data ./good_images --device cuda
+
+Model Architecture:
+  - Backbone: WideResNet50-2 pretrained on ImageNet
+  - Feature layers: layer2 (512ch) + layer3 (1024ch) = 1536 dimensions
+  - Patches per image: 784 (28x28 grid for 224x224 input)
         """
     )
 
@@ -442,6 +472,8 @@ Examples:
                        help='Fraction of training data for validation (0-1)')
     parser.add_argument('--f-coreset', type=float, default=0.1,
                        help='Coreset sampling ratio (default: 0.1)')
+    parser.add_argument('--input-size', type=int, default=224,
+                       help='Input image size (default: 224)')
     parser.add_argument('--device', choices=['auto', 'cpu', 'cuda'], default='auto',
                        help='Device to use for training (default: auto)')
     parser.add_argument('--visualize', action='store_true',
@@ -456,6 +488,7 @@ Examples:
         data_dir=args.data,
         output_path=args.output,
         f_coreset=args.f_coreset,
+        input_size=args.input_size,
         device=args.device,
         validation_dir=args.validate,
         validation_split=args.validation_split,
