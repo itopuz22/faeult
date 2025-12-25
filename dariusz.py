@@ -370,20 +370,28 @@ class PatchCoreModel:
         """
         try:
             from sklearn.cluster import MiniBatchKMeans
+            import os
+
+            # Fix Windows MKL memory leak by setting threads
+            os.environ.setdefault('OMP_NUM_THREADS', '4')
 
             logger.info("  Using MiniBatchKMeans for fast coreset sampling...")
 
-            # Use MiniBatchKMeans for fast clustering
+            # Use batch_size >= 4096 to avoid Windows MKL memory leak
+            batch_size = max(4096, min(n_samples, len(features) // 10))
+
             kmeans = MiniBatchKMeans(
                 n_clusters=n_samples,
-                batch_size=min(1024, n_samples),
+                batch_size=batch_size,
                 n_init=1,
                 max_iter=50,
-                random_state=42
+                random_state=42,
+                verbose=0
             )
             kmeans.fit(features)
 
             # Return cluster centers as coreset
+            logger.info(f"  Coreset sampling complete: {n_samples} cluster centers")
             return kmeans.cluster_centers_.astype(np.float32)
 
         except ImportError:
